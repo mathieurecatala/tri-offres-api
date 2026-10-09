@@ -1,0 +1,35 @@
+# docker compose up : la base Postgres et l'API. Valeurs de développement seulement (voir .env.example).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tri}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tri}
+      POSTGRES_DB: ${POSTGRES_DB:-tri_offres}
+    volumes:
+      - donnees:/var/lib/postgresql/data   # les offres survivent à un redémarrage
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build:
+      context: .
+      target: dev        # image avec les tests ; la cible « prod » est l'API seule
+    image: tri-offres-api:dev
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tri}:${POSTGRES_PASSWORD:-tri}@db:5432/${POSTGRES_DB:-tri_offres}
+      # Base séparée pour pytest, créée automatiquement par les tests : ils ne touchent jamais tes offres.
+      TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tri}:${POSTGRES_PASSWORD:-tri}@db:5432/tri_offres_test
+    volumes:
+      - ./config:/app/config:ro   # modifier rules.json ou companies.json sans reconstruire l'image
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  donnees:

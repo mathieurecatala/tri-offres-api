@@ -1,0 +1,57 @@
+{
+  "title_must_match_any": [
+    "engineer",
+    "developer",
+    "security",
+    "automation",
+    "ai",
+    "ml",
+    "machine learning",
+    "platform",
+    "solutions",
+    "integration"
+  ],
+  "title_exclude": [
+    "intern",
+    "internship",
+    "director",
+    "head of",
+    "vp",
+    "vice president",
+    "principal",
+    "staff",
+    "manager",
+    "recruiter",
+    "sales",
+    "account executive",
+    "support",
+    "developer relations",
+    "devrel",
+    "finops",
+    "ios",
+    "android",
+    "amer",
+    "apac"
+  ],
+  "location_allow_any": [
+    "remote",
+    "europe",
+    "emea",
+    "france",
+    "paris",
+    "anywhere",
+    "worldwide"
+  ],
+  "location_block_any": [
+    "united states",
+    "us only",
+    "us-only",
+    "usa",
+    "san francisco",
+    "new york",
+    "seattle",
+    "london only",
+    "singapore",
+    "tokyo"
+  ]
+}

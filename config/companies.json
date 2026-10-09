@@ -1,0 +1,6 @@
+[
+  {"company": "Dataiku", "ats": "greenhouse", "board": "dataiku"},
+  {"company": "Qonto", "ats": "lever", "board": "qonto"},
+  {"company": "Supabase", "ats": "ashby", "board": "supabase"},
+  {"company": "PostHog", "ats": "ashby", "board": "posthog"}
+]

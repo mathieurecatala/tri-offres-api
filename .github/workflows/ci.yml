@@ -1,0 +1,44 @@
+# CI : à chaque push et pull request, cherche des secrets, construit l'image et lance les tests dans le conteneur.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: gitleaks (secrets)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # tout l'historique : un secret effacé plus tard reste dans git
+      - name: Recherche de secrets dans tout l'historique
+        run: >
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --no-banner --redact --verbose
+
+  tests:
+    name: image + tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Construction de l'image de production
+        run: docker build --target prod -t tri-offres-api:prod .
+      - name: Construction de l'image de test
+        run: docker compose build api
+      - name: Tests dans le conteneur (Postgres réel, collecte simulée)
+        run: docker compose run --rm api pytest
+      - name: Démarrage complet et appel de /health
+        run: |
+          docker compose up -d --wait
+          curl --fail --retry 10 --retry-delay 2 --retry-all-errors http://localhost:8000/health
+      - name: Journaux en cas d'échec
+        if: failure()
+        run: docker compose logs
+      - name: Arrêt
+        if: always()
+        run: docker compose down -v
