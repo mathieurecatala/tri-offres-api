@@ -1,0 +1,25 @@
+{{- if .Values.networkPolicy.enabled }}
+# Pare-feu interne du cluster : Postgres n'accepte de connexions entrantes que depuis les pods de cette release
+# marqués acces-postgres: "true" (l'API), et seulement sur le port 5432. Tout autre pod est refusé.
+# Il faut un réseau de cluster qui applique les NetworkPolicy : c'est le cas de kind (kindnetd) depuis kind 0.24.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tri-offres.nom" . }}-postgres
+  labels:
+    {{- include "tri-offres.etiquettes" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tri-offres.selecteur.postgres" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              acces-postgres: "true"
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}

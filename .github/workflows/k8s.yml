@@ -1,0 +1,163 @@
+# CI Kubernetes : vérifie le chart Helm et le code Terraform, puis déploie pour de vrai sur un cluster kind créé
+# dans le runner GitHub (Kubernetes dans Docker, détruit à la fin). Aucun compte cloud.
+#   1. verifications : helm lint, terraform fmt -check et validate ;
+#   2. chart-kind    : cluster kind (action officielle helm/kind-action), chart installé avec helm, test de fumée HTTP
+#                      sur le Service, helm test, et contre-épreuve de la NetworkPolicy ;
+#   3. terraform-kind: le même chemin que sur un poste : infra/installer-outils.sh, infra/k8s.sh monter, puis
+#                      idempotence (un second « terraform plan » ne doit rien vouloir changer), puis detruire.
+# Actions épinglées par empreinte de commit (une étiquette peut être déplacée, pas une empreinte).
+name: Kubernetes
+
+on:
+  push:
+    paths:
+      - "app/**"
+      - "config/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "infra/**"
+      - ".github/workflows/k8s.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "config/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "infra/**"
+      - ".github/workflows/k8s.yml"
+
+permissions:
+  contents: read
+
+# Un seul run à la fois par branche : un nouveau push annule le run précédent devenu inutile.
+concurrency:
+  group: k8s-${{ github.ref }}
+  cancel-in-progress: true
+
+# Mêmes versions que infra/installer-outils.sh (utilisé tel quel par le job terraform-kind).
+env:
+  HELM_VERSION: v3.22.0
+  TERRAFORM_VERSION: 1.16.5
+  KIND_VERSION: v0.31.0
+  KUBECTL_VERSION: v1.35.9
+  # Image de nœud publiée pour kind 0.31.0, la même que infra/terraform/variables.tf.
+  NODE_IMAGE: kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+
+jobs:
+  verifications:
+    name: helm lint + terraform fmt/validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false   # aucune étape n'a besoin du jeton GitHub après le checkout
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: helm lint
+        run: helm lint --strict infra/helm/tri-offres
+      - name: helm template (le rendu doit être du YAML valide)
+        run: helm template tri-offres infra/helm/tri-offres --namespace tri-offres > /dev/null
+      - name: terraform fmt -check
+        run: terraform -chdir=infra/terraform fmt -check -recursive -diff
+      - name: terraform validate
+        run: |
+          terraform -chdir=infra/terraform init -input=false -backend=false
+          terraform -chdir=infra/terraform validate
+
+  chart-kind:
+    name: chart sur kind + test de fumée
+    needs: verifications
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false   # aucune étape n'a besoin du jeton GitHub après le checkout
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Construction de l'image de l'API (cible prod)
+        run: docker build --target prod -t tri-offres-api:ci .
+      - name: Cluster kind
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: ${{ env.NODE_IMAGE }}
+          kubectl_version: ${{ env.KUBECTL_VERSION }}
+          cluster_name: tri-offres
+          wait: 120s
+          ignore_failed_clean: true   # le cluster est déjà supprimé par l'étape « Nettoyage »
+      - name: Chargement de l'image dans le nœud kind
+        run: kind load docker-image tri-offres-api:ci --name tri-offres
+      - name: Espace de noms au niveau de sécurité « restricted »
+        run: |
+          kubectl create namespace tri-offres
+          kubectl label namespace tri-offres pod-security.kubernetes.io/enforce=restricted
+      - name: Installation du chart
+        run: >
+          helm install tri-offres infra/helm/tri-offres --namespace tri-offres
+          --set api.image.tag=ci --wait --timeout 5m
+      - name: Test de fumée HTTP sur le Service de l'API
+        run: |
+          kubectl -n tri-offres port-forward svc/tri-offres-api 8000:8000 > /tmp/port-forward.log 2>&1 &
+          infra/fumee.sh http://localhost:8000
+      - name: helm test (fumée depuis le cluster, NetworkPolicy autorise / refuse)
+        run: helm test tri-offres --namespace tri-offres --logs
+      - name: Contre-épreuve - sans la NetworkPolicy, le pod non autorisé doit joindre Postgres
+        run: |
+          kubectl -n tri-offres delete networkpolicy tri-offres-postgres
+          if helm test tri-offres --namespace tri-offres --filter name=tri-offres-test-postgres-refuse --logs \
+               > /tmp/contre-epreuve.log 2>&1; then
+            cat /tmp/contre-epreuve.log
+            echo "ERREUR : le test « refuse » passe même sans NetworkPolicy, il ne prouve rien." >&2
+            exit 1
+          fi
+          cat /tmp/contre-epreuve.log
+          grep -q "accepting connections" /tmp/contre-epreuve.log
+          echo "Sans NetworkPolicy la connexion passe, avec elle elle est bloquée : la NetworkPolicy est bien appliquée."
+      - name: État du cluster en cas d'échec
+        if: failure()
+        run: |
+          kubectl -n tri-offres get all,pvc,networkpolicy,events
+          kubectl -n tri-offres describe pods
+          kubectl -n tri-offres logs --all-containers --prefix -l app.kubernetes.io/instance=tri-offres --tail=100
+      - name: Nettoyage
+        if: always()
+        run: kind delete cluster --name tri-offres
+
+  terraform-kind:
+    name: terraform apply/plan/destroy sur kind
+    needs: verifications
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Outils avec le script du dépôt (kind, kubectl, helm, terraform, empreintes vérifiées)
+        run: |
+          infra/installer-outils.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: infra/k8s.sh monter (image, terraform apply, test de fumée)
+        run: infra/k8s.sh monter
+      - name: infra/k8s.sh idempotence (terraform plan -detailed-exitcode doit répondre 0)
+        run: infra/k8s.sh idempotence
+      - name: État du cluster en cas d'échec
+        if: failure()
+        env:
+          KUBECONFIG: infra/terraform/kubeconfig
+        run: |
+          kubectl -n tri-offres get all,pvc,networkpolicy,events || true
+          kubectl -n tri-offres describe pods || true
+      - name: infra/k8s.sh detruire (terraform destroy)
+        if: always()
+        run: infra/k8s.sh detruire
+      - name: Plus aucun cluster kind
+        if: always()
+        run: test -z "$(kind get clusters 2>/dev/null)"

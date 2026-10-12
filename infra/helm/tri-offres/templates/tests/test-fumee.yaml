@@ -1,0 +1,58 @@
+{{- $nom := include "tri-offres.nom" . -}}
+# « helm test » : test de fumée HTTP sur le Service de l'API, depuis l'intérieur du cluster. Lecture seule : il ne
+# modifie aucune donnée. Il prouve le câblage Service -> API -> Postgres, pas la collecte (qui appelle les ATS).
+# Utilise l'image de l'API elle-même (Python déjà dedans) : aucune image de plus à télécharger.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $nom }}-test-fumee
+  labels:
+    {{- include "tri-offres.etiquettes" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: fumee
+      image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+      imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+      env:
+        - name: URL_API
+          value: "http://{{ $nom }}-api:{{ .Values.api.service.port }}"
+      command:
+        - python
+        - -c
+        - |
+          import json, os, urllib.request
+          url = os.environ["URL_API"]
+
+          def appel(methode, chemin):
+              requete = urllib.request.Request(url + chemin, method=methode)
+              with urllib.request.urlopen(requete, timeout=10) as reponse:
+                  assert reponse.status == 200, f"{chemin} : HTTP {reponse.status}"
+                  return json.load(reponse)
+
+          sante = appel("GET", "/health")
+          assert sante == {"statut": "ok", "base": "ok"}, sante
+          print("GET /health :", sante)
+          page = appel("GET", "/offres?limite=5")
+          assert isinstance(page["total"], int) and isinstance(page["offres"], list), page
+          print("GET /offres :", page["total"], "offre(s) en base")
+          rejets = appel("GET", "/rejets?limite=1")
+          assert isinstance(rejets["par_categorie"], dict), rejets
+          print("GET /rejets :", rejets["total"], "rejet(s)")
+          print("Test de fumée : OK")
+      securityContext:
+        {{- include "tri-offres.securite.conteneur" . | nindent 8 }}
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {cpu: 200m, memory: 64Mi}

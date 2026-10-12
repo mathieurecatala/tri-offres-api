@@ -1,0 +1,10 @@
+Tri d'offres installé dans l'espace de noms {{ .Release.Namespace }}.
+
+{{- if eq .Values.api.service.type "NodePort" }}
+API : http://localhost:{{ .Values.api.service.portLocal }}/docs (port du nœud {{ .Values.api.service.nodePort }}, ouvert sur la machine par kind)
+{{- else }}
+API : kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tri-offres.nom" . }}-api 8000:{{ .Values.api.service.port }}
+      puis http://localhost:8000/docs
+{{- end }}
+
+Test de fumée (et preuve de la NetworkPolicy) : helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs

@@ -5,3 +5,8 @@ __pycache__/
 run/
 .pytest_cache/
 .ruff_cache/
+# Terraform (infra/terraform) : état local, providers téléchargés et kubeconfig du cluster kind
+.terraform/
+*.tfstate
+*.tfstate.*
+infra/terraform/kubeconfig

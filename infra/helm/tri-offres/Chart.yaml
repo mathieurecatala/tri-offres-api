@@ -1,0 +1,8 @@
+apiVersion: v2
+name: tri-offres
+description: >-
+  Tri d'offres sur Kubernetes : l'API FastAPI et sa base Postgres, pour un cluster local (kind).
+  Projet personnel, octobre 2026, monté avec l'IA (Claude Code).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

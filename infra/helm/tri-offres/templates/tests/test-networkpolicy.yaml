@@ -1,0 +1,54 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $nom := include "tri-offres.nom" . -}}
+{{- $postgres := printf "%s-postgres" $nom -}}
+{{- /*
+  « helm test » : preuve que la NetworkPolicy est appliquée par le réseau du cluster, pas seulement acceptée.
+  Deux pods identiques (même image, même commande pg_isready vers Postgres) ; une seule différence, l'étiquette
+  acces-postgres: "true". Le pod qui l'a doit joindre Postgres, celui qui ne l'a pas doit être bloqué.
+  Si le réseau n'appliquait pas les NetworkPolicy, le second test échouerait (connexion acceptée).
+*/ -}}
+{{- range $cas := list "autorise" "refuse" }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $nom }}-test-postgres-{{ $cas }}
+  labels:
+    {{- include "tri-offres.etiquettes" $ | nindent 4 }}
+    app.kubernetes.io/component: test
+    {{- if eq $cas "autorise" }}
+    acces-postgres: "true"
+    {{- end }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "tri-offres.securite.pod.postgres" $ | nindent 4 }}
+  containers:
+    - name: sonde
+      image: "{{ $.Values.postgres.image.repository }}:{{ $.Values.postgres.image.tag }}"
+      imagePullPolicy: {{ $.Values.postgres.image.pullPolicy }}
+      command:
+        - sh
+        - -c
+        - |
+          # pg_isready : 0 = Postgres accepte les connexions ; autre code = pas de réponse ou refus.
+          pg_isready -h {{ $postgres }} -p 5432 -U {{ $.Values.postgres.utilisateur }} -t 5
+          code=$?
+          {{- if eq $cas "autorise" }}
+          [ "$code" -eq 0 ] && echo "Pod autorisé : connexion à Postgres acceptée (attendu)" && exit 0
+          echo "ÉCHEC : le pod autorisé n'a pas pu joindre Postgres (code $code)"; exit 1
+          {{- else }}
+          [ "$code" -ne 0 ] && echo "Pod non autorisé : connexion à Postgres bloquée (attendu, code $code)" && exit 0
+          echo "ÉCHEC : le pod non autorisé a joint Postgres, la NetworkPolicy n'est pas appliquée"; exit 1
+          {{- end }}
+      securityContext:
+        {{- include "tri-offres.securite.conteneur" $ | nindent 8 }}
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 32Mi}
+{{- end }}
+{{- end }}
